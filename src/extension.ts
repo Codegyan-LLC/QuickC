@@ -2,7 +2,6 @@ import { exec } from 'child_process';
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as os from 'os';
 
 let currentDecorationType: vscode.TextEditorDecorationType | undefined;
 let errorDecorationType: vscode.TextEditorDecorationType | undefined;
@@ -41,11 +40,19 @@ function activate(context: vscode.ExtensionContext) {
 function updateOutput(editor: vscode.TextEditor) {
     clearTimeout(timeout);
     timeout = setTimeout(() => {
-        const currentLine = editor.selection.active.line;
-        const currentLineText = editor.document.lineAt(currentLine).text.trim();
-        if (currentLineText.includes('printf') || currentLineText.includes('scanf')) {
-            const documentText = editor.document.getText();
-            runCCode(documentText, editor, currentLine);
+        const documentText = editor.document.getText();
+        const lines = documentText.split('\n');
+
+        let targetLine = -1;
+        for (let i = 0; i < lines.length; i++) {
+            if (lines[i].includes('printf') || lines[i].includes('scanf')) {
+                targetLine = i;
+                break;
+            }
+        }
+
+        if (targetLine !== -1) {
+            runCCode(documentText, editor, targetLine);
         } else {
             clearOutput(editor);
         }
@@ -66,8 +73,9 @@ function clearOutput(editor: vscode.TextEditor) {
 }
 
 function runCCode(code: string, editor: vscode.TextEditor, currentLine: number) {
-    const tempFilePath = path.join(os.tmpdir(), 'quickc.c');
-    const outputFilePath = path.join(os.tmpdir(), 'quickc.out');
+    const documentPath = editor.document.uri.fsPath; // Get the actual file path
+    const tempFilePath = path.join(__dirname, 'quickc.c');
+    const outputFilePath = path.join(__dirname, 'quickc.out');
     fs.writeFileSync(tempFilePath, code);
 
     const gccPath = vscode.workspace.getConfiguration('quickc').get<string>('gccPath') || defaultConfig.gccPath;
@@ -79,23 +87,17 @@ function runCCode(code: string, editor: vscode.TextEditor, currentLine: number) 
 
         if (error || stderr) {
             clearOutput(editor);
-            displayInlineOutput(`Error: ${stderr.trim() || (error ? error.message : 'Unknown error')}`, editor, currentLine, executionTime, true);
+            const formattedError = stderr.replace(tempFilePath, documentPath);
+            displayInlineOutput(` ${formattedError.trim() || (error ? error.message : 'Unknown error')}`, editor, currentLine, executionTime, true);
         } else {
             clearOutput(editor);
             displayInlineOutput(stdout.trim(), editor, currentLine, executionTime);
         }
 
-        // Ensure both the temporary source and output files are deleted
-        fs.unlink(tempFilePath, (err) => {
-            if (err) {
-                console.error(`Failed to delete temp source file: ${err.message}`);
-            }
-        });
-        fs.unlink(outputFilePath, (err) => {
-            if (err) {
-                console.error(`Failed to delete temp output file: ${err.message}`);
-            }
-        });
+        fs.unlinkSync(tempFilePath);
+        if (fs.existsSync(outputFilePath)) {
+            fs.unlinkSync(outputFilePath);
+        }
     });
 }
 
@@ -107,40 +109,53 @@ function runSelectedBlock(editor: vscode.TextEditor) {
         return;
     }
 
-    const tempFilePath = path.join(os.tmpdir(), 'quickc_block.c');
-    const outputFilePath = path.join(os.tmpdir(), 'quickc_block.out');
+    const documentPath = editor.document.uri.fsPath; 
+    const tempFilePath = path.join(__dirname, 'quickc_block.c');
+    const outputFilePath = path.join(__dirname, 'quickc_block.out');
     fs.writeFileSync(tempFilePath, selectedText);
 
     const gccPath = vscode.workspace.getConfiguration('quickc').get<string>('gccPath') || defaultConfig.gccPath;
 
     exec(`${gccPath} "${tempFilePath}" -o "${outputFilePath}" && "${outputFilePath}"`, (error, stdout, stderr) => {
-        if (error || stderr) {
-            clearOutput(editor);
-            vscode.window.showErrorMessage(stderr.trim() || (error ? error.message : 'Unknown error'));
-        } else {
-            vscode.window.showInformationMessage(stdout.trim());
-        }
-
-        // Ensure both the temporary source and output files are deleted
-        fs.unlink(tempFilePath, (err) => {
-            if (err) {
-                console.error(`Failed to delete temp source file: ${err.message}`);
-            }
-        });
-        fs.unlink(outputFilePath, (err) => {
-            if (err) {
-                console.error(`Failed to delete temp output file: ${err.message}`);
-            }
-        });
-    });
+		const documentPath = editor.document.uri.fsPath; // Actual file path
+	
+		if (error || stderr) {
+			clearOutput(editor);
+			
+			const formattedError = stderr.replace(new RegExp(tempFilePath, 'g'), documentPath);
+			
+			vscode.window.showErrorMessage(formattedError.trim() || (error ? error.message : 'Unknown error'));
+		} else {
+			// Remove unnecessary headers like #include from stdout
+			const cleanedOutput = stdout
+				.split('\n')
+				.filter(line => !line.trim().startsWith('#include'))
+				.join('\n');
+	
+			vscode.window.showInformationMessage(cleanedOutput.trim());
+		}
+	
+		fs.unlinkSync(tempFilePath);
+		if (fs.existsSync(outputFilePath)) {
+			fs.unlinkSync(outputFilePath);
+		}
+	});
 }
 
 function displayInlineOutput(output: string, editor: vscode.TextEditor, currentLine: number, executionTime: string, isError = false) {
     if (!output.trim()) { return; }
     clearOutput(editor);
 
+    // Remove any lines starting with #include
+    const cleanedOutput = output
+        .split('\n')
+        .filter(line => !line.trim().startsWith('#include'))
+        .join('\n');
+
     const color = isError ? 'red' : vscode.workspace.getConfiguration('quickc').get<string>('inlineColor') || defaultConfig.inlineColor;
-    const formattedOutput = isError ? `Error: ${output} (Execution Time: ${executionTime}s)` : `${output} (Execution Time: ${executionTime}s)`;
+    const formattedOutput = isError 
+        ? `Error: ${cleanedOutput} (Execution Time: ${executionTime}s)` 
+        : `${cleanedOutput} (Execution Time: ${executionTime}s)`;
 
     const targetLineText = editor.document.lineAt(currentLine).text;
     const decorations: vscode.DecorationOptions[] = [

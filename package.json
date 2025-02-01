@@ -4,7 +4,7 @@
   "description": "A VS Code extension to run and display C output inline.",
   "publisher": "codegyan",
   "author": "Prathmesh Yelne",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "engines": {
     "vscode": "^1.96.0"
   },
